@@ -9,7 +9,8 @@ import time
 import sys
 from shootout.methods import runners as rn
 from shootout.methods import post_processors as pp
-from utils import opt_scaling_fro
+from shootout.methods.plotters import line, rename_axis
+from utils import opt_scaling
 import plotly.io as pio
 pio.kaleido.scope.mathjax = None # bug
 pio.templates.default= "plotly_white"
@@ -63,10 +64,9 @@ variables = {
     "seed" : seeds,
 }
 
-# TODO voir si c'est la peine de mettre KL ici
-algs = ["mSOM", "MUSOM", "PGD", "NeNMF", "MU", "HALS"]#, "MU_kl", "mSOM_kl", "trueMU_KL"]
+algs = ["MU", "MUSOM", "SN CCD", "mSOM"]
 #name = "hsi_nls_test_06_03_2024"
-name = "hsi_nls_18_04_2025"
+name = "hsi_nls_kl_19_01_2026"
 
 @rn.run_and_track(
     algorithm_names=algs, 
@@ -80,90 +80,107 @@ def one_run(**cfg):
     rng = np.random.RandomState(cfg["seed"]+20)
     # Init
     Hini = rng.rand(Wref.shape[1], M.shape[1])
-    lamb = opt_scaling_fro(M, Wref@Hini)
+    lamb = opt_scaling(M, Wref@Hini)
     Hini = lamb*Hini
+    
+    error8, H8, toc8 = nls_kl.Lee_Seung_KL(M, Wref, Hini, NbIter=cfg["NbIter"], verbose=verbose, delta=cfg["delta"], epsilon=cfg["epsilon"])
+    error9, H9, toc9 = nls_kl.Proposed_KL(M, Wref, Hini, NbIter=cfg["NbIter"], verbose=verbose, delta=cfg["delta"], gamma=1.9, epsilon=cfg["epsilon"], method="MUSOM")
+    error10, H10, toc10 = nls_kl.ScalarNewton(M, Wref, Hini, NbIter=cfg["NbIter"], verbose=verbose, delta=cfg["delta"], epsilon=cfg["epsilon"], method="CCD", print_it=10)
+    error11, H11, toc11 = nls_kl.Proposed_KL(M, Wref, Hini, NbIter=cfg["NbIter"], verbose=verbose, delta=cfg["delta"], gamma=1.9, epsilon=cfg["epsilon"])
 
-    # Note: first iteration is more expensive for all methods because it is where we compute the inner products
-    error0, H0, toc0 = nls_f.NMF_proposed_Frobenius(M, Wref, np.copy(Hini), cfg["NbIter"], delta=cfg["delta"], verbose=verbose, gamma=1.9, epsilon=cfg["epsilon"])
-    error2, H2, toc2 = nls_f.NMF_proposed_Frobenius(M, Wref, np.copy(Hini), cfg["NbIter"], method="MUSOM", delta=cfg["delta"], verbose=verbose, gamma=1.9, epsilon=cfg["epsilon"])
-    error3, H3, toc3 = nls_f.Grad_descent(M, Wref, np.copy(Hini), cfg["NbIter"],  epsilon=cfg["epsilon"], verbose=verbose, delta=cfg["delta"], gamma=1.9)
-    error4, H4, toc4 = nls_f.NeNMF(M, Wref, np.copy(Hini), itermax=cfg["NbIter"], epsilon=cfg["epsilon"], verbose=verbose, delta=cfg["delta"])
-    error5, H5, toc5 = nls_f.NMF_Lee_Seung(M,  Wref, np.copy(Hini), cfg["NbIter"], legacy=False, delta=cfg["delta"], verbose=verbose, epsilon=cfg["epsilon"])
-    
-    # HALS is unfair because we compute things before. We add the time needed for this back after the algorithm
-    tic = time.perf_counter()
-    WtV = Wref.T@M
-    WtW = Wref.T@Wref
-    toc6_offset = time.perf_counter() - tic
-    H6, _, _, _, error6, toc6 = nn_fac.nnls.hals_nnls_acc(WtV, WtW, np.copy(Hini), maxiter=cfg["NbIter"], return_error=True, delta=cfg["delta"], M=M)
-    toc6 = [toc6[i] + toc6_offset for i in range(len(toc6))] # leave the 0 in place for init
-    toc6[0]=0
-    
+
     return {
-        "errors": [error0, error2, error3, error4, error5, error6],  #, error7, error8, error9],
-        "timings": [toc0, toc2, toc3, toc4, toc5, toc6],  # toc7, toc8, toc9],
+        "errors": [error8, error9, error10, error11],  #, error7, error8, error9],
+        "timings": [toc8, toc9, toc10, toc11],  # toc7, toc8, toc9],
         #"loss": 5*["l2"]+3*["kl"],
     }
 
-
+# ---------- Results ----------
 df = pd.read_pickle("Results/"+name)
+scale, scale_text = 1.5, 3.1  # size of the plots
+quantile = 0.3  # Should be 0.5 but there is a bug with the error bands because of NaN in one run that breaks the quantile
+threshold_points = 50
+variables_plot = []
+n_cols = 1  # for the threshold plots
+meanplot = "min"  # TODO typical that works
 
+# ------------- Performance plots -------
+algorithms = df["algorithm"][:len(algs)]
+
+fig = pp.performance_profiles(df, variables=variables_plot, n_cols=n_cols, threshold_points=threshold_points, algorithms=algorithms)
+
+fig.update_layout(
+    title="HSI KL NLS, winner profiles",
+    template="plotly_white",
+    font_size=8*scale_text,
+    height=350*scale,  # adjust figure height
+    width=450*scale,            # adjust figure width
+    # when next to conv plot
+    showlegend=False,
+    title_font_size=9*scale_text,
+)
+fig.update_annotations(font_size=8*scale_text)
+fig.show()
+
+# ------------------- Convergence plots -----------
 # Remove extrapolation
 #df = df[df["algorithm"] != "fastMU_Fro_ex"]
 
 # Interpolating
 ovars_iterp = ["algorithm"]
-df = pp.interpolate_time_and_error(df, npoints=50, adaptive_grid=True, groups=ovars_iterp)
+df = pp.interpolate_time_and_error(df, npoints=df["NbIter"][0], adaptive_grid=True, groups=ovars_iterp)
 
 # Making a convergence plot dataframe
 # We will show convergence plots for various sigma values, with only n=100
-df_l2_conv = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=[],
+ovars=["seed"]
+df_l2_conv = pp.df_to_convergence_df(df, groups=True, groups_names=ovars, other_names=ovars,
                                      err_name="errors_interp", time_name="timings_interp")
 df_l2_conv = df_l2_conv.rename(columns={"timings_interp": "timings", "errors_interp": "errors"})
 
-df_l2_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=[])
-
-#df_kl_conv = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=[],
-                               #filters={"loss":"kl"}, err_name="errors_interp", time_name="timings_interp")
-#df_kl_conv = df_kl_conv.rename(columns={"timings_interp": "timings", "errors_interp": "errors"})
-#df_kl_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=[],
-                              # filters={"loss":"kl"})
-# ----------------------- Plot --------------------------- #
-#fig_winner = plot_speed_comparison(thresh, scores_time, scores_it, legend=algs)
-#fig_winner.show()
+df_l2_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=ovars, other_names=ovars)
 
 # Median plots
-df_l2_conv_median_time = pp.median_convergence_plot(df_l2_conv, type_x="timings")
-df_l2_conv_median_it = pp.median_convergence_plot(df_l2_conv_it, type_x="iterations")
+df_l2_conv_median_time = pp.median_convergence_plot(df_l2_conv, type_x="timings", mean=meanplot, quantile=quantile)
+df_l2_conv_median_it = pp.median_convergence_plot(df_l2_conv_it, type_x="iterations", mean=meanplot, quantile=quantile)
 
 #df_kl_conv_median_time = pp.median_convergence_plot(df_kl_conv, type_x="timings")
 #df_kl_conv_median_it = pp.median_convergence_plot(df_kl_conv_it, type_x="iterations")
 
 # Convergence plots with all runs
-pxfig = px.line(df_l2_conv_median_time, 
+pxfig = line(
+            data_frame=df_l2_conv_median_time, 
             x="timings", 
             y= "errors", 
             color='algorithm',
-            line_dash='algorithm',
+            #line_dash='algorithm',
             log_y=True,
             #log_x=True,
             #line_group='groups',
-            #error_y="q_errors_p", 
-            #error_y_minus="q_errors_m", 
+            error_y_mode="band",
+            error_y="q_errors_p", 
+            error_y_minus="q_errors_m", 
+            category_orders={
+                "algorithm": algs
+                }
 )
 
-pxfigit = px.line(df_l2_conv_median_it, 
+pxfigit = line(
+            data_frame=df_l2_conv_median_it, 
             x="it", 
             y= "errors", 
             color='algorithm',
-            line_dash='algorithm',
+            #line_dash='algorithm',
             log_y=True,
             #facet_row="seed",
             #line_group='groups',
-            #error_y="q_errors_p", 
-            #error_y_minus="q_errors_m", 
+            error_y_mode="band",
+            error_y="q_errors_p", 
+            error_y_minus="q_errors_m", 
 )
-
+#rename_axis(pxfig, scale=scale, xtext="Time (s)", ytext="Loss")
+pxfig.layout.title.text = "HSI KL NLS, convergence plots"
+pxfig.layout.title.font.size = 9*scale_text
+pxfig.update_layout(margin_t=100)
 
 # Final touch
 pxfig.update_traces(
@@ -173,13 +190,12 @@ pxfig.update_traces(
 )
 
 pxfig.update_layout(
-    title_text = "NLS",
-    font_size = 10,
-    width=450/2, # in px
-    height=350,
-    xaxis=dict(range=[0, 1.0], title_text="Time (s)"),
-    #xaxis=dict(title_text="Time (s)"),
-    yaxis=dict(title_text="n. Loss")
+    font_size = 8*scale_text,
+    width=450*scale, # in px
+    height=350*scale,
+    #xaxis=dict(range=[0, 1.0], title_text="Time (s)"),
+    xaxis=dict(title_text="Time (s)"),
+    yaxis=dict(title_text="Loss")
 )
 
 pxfig.update_xaxes(
@@ -199,9 +215,9 @@ pxfigit.update_traces(
 
 pxfigit.update_layout(
     title_text = "NLS",
-    font_size = 12,
-    width=450*1.62/2, # in px
-    height=450,
+    font_size = 8*scale_text,
+    width=450*scale, # in px
+    height=350*scale,
     #xaxis=dict(range=[0,1.0], title_text="Time (s)"),
     #yaxis=dict(title_text="Fit")
 )
@@ -215,10 +231,11 @@ pxfigit.update_yaxes(
     showticklabels=True
 )
 # buuuuuugggedddd
-pxfig.write_image("Results/"+name+"_fro.pdf")
-pxfigit.write_image("Results/"+name+"_fro_it.pdf")
+pxfig.write_image("Results/"+name+".pdf")
+#pxfigit.write_image("Results/"+name+"_it.pdf")
+fig.write_image("Results/"+name+"_performance.pdf")
 pxfig.show()
-pxfigit.show()
+#pxfigit.show()
 
 #pxfig2 = px.line(df_kl_conv_median_time, 
             #x="timings", 

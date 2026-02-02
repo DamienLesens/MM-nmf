@@ -2,10 +2,14 @@ import numpy as np
 from matplotlib import pyplot as plt
 import NMF_KL as nmf_kl
 import pandas as pd
-import plotly.express as px
 import sys
+import plotly.express as px
 import plotly.io as pio
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from utils import sparsify, opt_scaling
+import itertools
+
 pio.kaleido.scope.mathjax = None
 
 # Personnal comparison toolbox
@@ -13,7 +17,7 @@ pio.kaleido.scope.mathjax = None
 # https://github.com/cohenjer/shootout
 from shootout.methods.runners import run_and_track
 import shootout.methods.post_processors as pp
-from shootout.methods.plotters import plot_speed_comparison
+from shootout.methods.plotters import line, rename_axis
 
 plt.close('all')
 
@@ -30,38 +34,45 @@ variables = {
     "mnr": [[200, 100, 10]],
     "NbIter_inner": [10],
     "NbIter_inner_SN": [3],
-    "NbIter": [100], 
-    "NbIter_SN": [20],
+    "NbIter": [500], # TODO changed
+    "NbIter_SN": [80],
     # Testing [40,20]
     "SNR": [100, 20],  #5000 and 50 photons
     "delta": 0, 
     "setup": ["dense", "sparse"],
     "epsilon": 1e-16,
     "show_it": 100,
+    "unbalanced_scale": -3,  # SNR is incorrect ?
     "tol": 0, 
     "seed": seeds,
 }
 
-algs = ["AMU", "AmSOM", "AMUSOM", "ASN CCD"]#
-name = "KL_sparse_run_14-04-2025"
+algs = ["AMU", "AMUSOM", "ASN CCD", "AmSOM"]#
+name = "KL_sparse_run_unbalanced_28-01-2026"
 #name = "trash_KL_sparse_run_14-04-2025"
 
 @run_and_track(algorithm_names=algs, path_store="Results/", name_store=name, verbose=True, skip=skip, **variables)
 def one_run(verbose=True, **cfg):
     m, n, r = cfg["mnr"]
-    # Fixed the signal 
+    # Fixed seed for the signal 
+    #rng = np.random.RandomState(20) # TODO WARNING, THIS IS JUST FOR THE REVIEW ANSWER, SHOULD BE CHANGED BACK
     rng = np.random.RandomState(cfg["seed"]+20)
     Worig = rng.rand(m, r) 
     Horig = rng.rand(r, n)  
     Vorig = Worig.dot(Horig)
 
-    
     match cfg["setup"]:
         case "dense":  # Dense
+            # Rescaling the components to degrade the conditionning of the problem
+            Worig = Worig * np.logspace(0, cfg["unbalanced_scale"], r)[np.newaxis, :]
+            # Data generation            
             Vorig = Worig.dot(Horig)  # densified
         case "sparse":  # sparse factors and data
             Worig = sparsify(Worig, s=0.5, epsilon=cfg["epsilon"])
             Horig = sparsify(Horig, s=0.5, epsilon=cfg["epsilon"])
+            # Rescaling the components to degrade the conditionning of the problem
+            Worig = Worig * np.logspace(0, cfg["unbalanced_scale"], r)[np.newaxis, :]
+            # Data generation
             Vorig = Worig.dot(Horig)  #+ 0.1 # densified
 
     # adding Poisson noise to the observed data
@@ -72,10 +83,16 @@ def one_run(verbose=True, **cfg):
     
     # Generating data with Poisson distribution
     sigma = 0.5*10**(cfg["SNR"]/10)# intensity for the target SNR, mean x value 0.5
-    # True SNR depends on value of x, very low if x is low. Here is give the average SNR of sorts
-    V = np.maximum(np.random.poisson(sigma*Vorig), cfg["epsilon"])
+    a = (10**(cfg["unbalanced_scale"]))**(1/(cfg["mnr"][2]-1)) # approx correction for unbalanced
+    sigma = sigma *(1-a)*cfg["mnr"][2] # SNR correction because the rescaling of W decreases the mean value of V
+    print(f"Unbalanced factor: {cfg['mnr'][2]*(1-a)}, adjusted sigma: {sigma}")
+    # Obtained by computing the expected values of V (0.25R if balanced, 0.25/1-a if unbalanced)
+    # True SNR depends on value of x, very low if x is low. Here it give the average SNR of sorts
+    V = np.maximum(rng.poisson(sigma*Vorig), cfg["epsilon"])
     V = V/np.max(V) # [0,1] normalization
 
+    # Seed for initialization
+    #rng = np.random.RandomState(cfg["seed"]+20)
     # Initialization for H0 as a random matrix
     Hini = rng.rand(r, n)
     Wini = rng.rand(m, r)  # sparse.random(rV, cW, density=0.25).toarray() 
@@ -88,15 +105,15 @@ def one_run(verbose=True, **cfg):
     # MU
     error0, W0, H0, toc0, cnt0 = nmf_kl.Lee_Seung_KL(V, Wini, Hini, NbIter=cfg["NbIter"], nb_inner=cfg["NbIter_inner"], tol=cfg["tol"], verbose=verbose, print_it=cfg["show_it"], delta=cfg["delta"])
     
-    # mSOM
-    error1, W1, H1, toc1, cnt1 = nmf_kl.Proposed_KL(V, Wini, Hini, NbIter=cfg["NbIter"], nb_inner=cfg["NbIter_inner"], tol=cfg["tol"], verbose=verbose, print_it=cfg["show_it"], delta=cfg["delta"], gamma=1.9, method="AmSOM", epsilon=cfg["epsilon"])
-    
     # MuSOM
-    error2, W2, H2, toc2, cnt2 = nmf_kl.Proposed_KL(V, Wini, Hini, NbIter=cfg["NbIter"], nb_inner=cfg["NbIter_inner"], tol=cfg["tol"], verbose=verbose, print_it=cfg["show_it"], delta=cfg["delta"], gamma=1.9, method="AMUSOM", epsilon=cfg["epsilon"])
+    error1, W1, H1, toc1, cnt1 = nmf_kl.Proposed_KL(V, Wini, Hini, NbIter=cfg["NbIter"], nb_inner=cfg["NbIter_inner"], tol=cfg["tol"], verbose=verbose, print_it=cfg["show_it"], delta=cfg["delta"], gamma=1.9, method="AMUSOM", epsilon=cfg["epsilon"])
     
     # SN (CCD)
-    error3, W3, H3, toc3, cnt3 = nmf_kl.ScalarNewton(V, Wini, Hini, NbIter=cfg["NbIter_SN"], nb_inner=cfg["NbIter_inner_SN"], tol=cfg["tol"], verbose=verbose, print_it=cfg["show_it"], delta=cfg["delta"], method="CCD", epsilon=cfg["epsilon"])  # TODO care inner stop
-    # TODO instabilité SN CDD handled heuristically with epsilons
+    error2, W2, H2, toc2, cnt2 = nmf_kl.ScalarNewton(V, Wini, Hini, NbIter=cfg["NbIter_SN"], nb_inner=cfg["NbIter_inner_SN"], tol=cfg["tol"], verbose=verbose, print_it=cfg["show_it"], delta=cfg["delta"], method="CCD", epsilon=cfg["epsilon"])  # TODO care inner stop
+    
+    # mSOM
+    error3, W3, H3, toc3, cnt3 = nmf_kl.Proposed_KL(V, Wini, Hini, NbIter=cfg["NbIter"], nb_inner=cfg["NbIter_inner"], tol=cfg["tol"], verbose=verbose, print_it=cfg["show_it"], delta=cfg["delta"], gamma=1.9, method="AmSOM", epsilon=cfg["epsilon"])
+    
     
     
     #error4, W4, H4, toc4, cnt4 = nmf_kl.Proposed_KL(V, Wini, Hini, NbIter=NbIter, nb_inner=NbIter_inner, tol=tol, verbose=verbose, print_it=show_it, delta=delta, use_LeeS=False, gamma=1.9, true_hessian=False, epsilon=epsilon)
@@ -109,15 +126,43 @@ def one_run(verbose=True, **cfg):
 
 
 # -------------------- Post-Processing ------------------- #
-import pandas as pd
 pio.templates.default= "plotly_white"
+scale, scale_text = 1.5, 2.2  # size of the plots
+quantile = 0.75  # for the error bars, 0.5 is median, 1 is all
+threshold_points = 50
+variables_plot = ["setup", "SNR"]
+n_cols = 2  # for the threshold plots
+meanplot = "median"  # TODO typical that works
 
+# Import xp results
 df = pd.read_pickle("Results/"+name)
 nb_seeds = df["seed"].max()+1 # get nbseed from data
 
+# Check that algs are correctly defined
+algorithms = df["algorithm"][:len(algs)]
+
+# ----------- Performance profiles for all setups and SNRs -------------- #
+fig = pp.performance_profiles(df, variables=variables_plot, n_cols=n_cols, threshold_points=threshold_points, algorithms=algorithms)
+
+# Update layout
+fig.update_layout(
+    title="Synthetic KL NMF unbalanced, winner profiles",
+    xaxis_type="log",
+    template="plotly_white",
+    font_size=8*scale_text,
+    height=350*scale,  # adjust figure height
+    width=450*scale,            # adjust figure width
+    # when next to conv plot
+    showlegend=False,
+    title_font_size=9*scale_text,
+)
+fig.update_annotations(font_size=8*scale_text)
+fig.show()
+
+
 # Making a convergence plot dataframe
 ovars_interp = ["mnr", "setup", "SNR", "algorithm"]
-df = pp.interpolate_time_and_error(df, npoints=df["NbIter"][0], adaptive_grid=True, groups=ovars_interp)
+df = pp.interpolate_time_and_error(df, npoints=df["NbIter"][0], adaptive_grid=True, groups=ovars_interp, logtime=False)
 
 #for setup in ["dense","fac sparse","fac data sparse","data sparse"]:
 # We will show convergence plots for various sigma values, with only n=100
@@ -127,24 +172,32 @@ df_conv = df_conv.rename(columns={"timings_interp": "timings", "errors_interp": 
 df_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=ovars, other_names=ovars)#, filters=dict({"setup":setup}))
 
 # Median plot
-df_conv_median_time = pp.median_convergence_plot(df_conv, type_x="timings")
-df_conv_median_it = pp.median_convergence_plot(df_conv_it, type_x="iterations")
+df_conv_median_time = pp.median_convergence_plot(df_conv, mean=meanplot, type_x="timings", quantile=quantile)
+df_conv_median_it = pp.median_convergence_plot(df_conv_it, mean=meanplot, type_x="iterations", quantile=quantile)
+
+
+df_conv_median_time["setup_SNR"] = df_conv_median_time["setup"] + ", SNR=" + df_conv_median_time["SNR"].astype(str)
 
 # Convergence plots with all runs
-pxfig = px.line(df_conv_median_time, 
+pxfig = line(
+            data_frame=df_conv_median_time, 
             x="timings", 
             y= "errors", 
             color='algorithm',
-            line_dash='algorithm',
-            facet_row="SNR",
-            facet_col="setup",
+            #line_dash='algorithm',
+            facet_col="setup_SNR",
             facet_col_wrap=2,
             log_y=True,
             log_x=True,
-            facet_col_spacing=0.1,
-            facet_row_spacing=0.1,
-            #error_y="q_errors_p", 
-            #error_y_minus="q_errors_m" 
+            facet_col_spacing=0.12,
+            facet_row_spacing=0.2,
+            error_y_mode='band',
+            error_y="q_errors_p", 
+            error_y_minus="q_errors_m",
+            category_orders={
+                "algorithm": algs,
+                "setup_SNR": ["dense, SNR=20", "dense, SNR=100", "sparse, SNR=20", "sparse, SNR=100"]
+                }
 )
 
 # Final touch
@@ -155,10 +208,10 @@ pxfig.update_traces(
 )
 
 pxfig.update_layout(
-    font_size = 10,
+    font_size = 8*scale_text,
     #title_text = f"NMF Results for Setup {setup}",
-    width=450, # in px
-    height=350,
+    width=450*scale, # in px
+    height=350*scale,
     #xaxis1=dict(range=[0,0.5], title_text="Time (s)"),
     #xaxis2=dict(range=[0,0.5], title_text="Time (s)"),
     #xaxis3=dict(range=[0,0.5]),
@@ -178,34 +231,53 @@ pxfig.update_yaxes(
     showticklabels=True
 )
 
+# Update annotations
+for ann in pxfig.layout.annotations:
+    if ann.text.startswith("setup"):
+        ann.text = ann.text.replace("setup_SNR","setup")
+
 # Convergence plots with all runs its
-pxfigit = px.line(df_conv_median_it, 
+pxfigit = line(
+            data_frame=df_conv_median_it, 
             x="it", 
             y= "errors", 
             color='algorithm',
-            line_dash='algorithm',
+            #line_dash='algorithm',
             facet_row="SNR",
             facet_col="setup",
             facet_col_wrap=2,
             log_y=True,
-            facet_col_spacing=0.1,
-            facet_row_spacing=0.1,
-            #error_y="q_errors_p", 
-            #error_y_minus="q_errors_m" 
+            facet_col_spacing=0.12,
+            facet_row_spacing=0.2,
+            error_y_mode='band',
+            error_y="q_errors_p", 
+            error_y_minus="q_errors_m" 
 )
 
 # Final touch
+rename_axis(pxfig, scale=scale_text, xtext="Time (s)", ytext="Loss")
+pxfig.layout.title.text = "Synthetic KL NMF unbalanced, convergence plots"
+pxfig.layout.title.font.size = 9*scale_text
+pxfig.update_layout(margin_t=100)
+
 pxfigit.update_traces(
     selector=dict(),
     line_width=2.5,
+    #error_y=dict(
+        #type='percent',
+        #value=0.1,
+        #color='purple',
+        #thickness=.3,
+        #width=0,
+    #),
     #error_y_thickness = 0.3,
 )
 
 pxfigit.update_layout(
-    font_size = 10,
+    font_size = 8*scale_text,
     #title_text = f"NMF Results for Setup {setup}",
-    width=450, # in px
-    height=350,
+    width=450*scale, # in px
+    height=350*scale,
     yaxis1=dict(title_text="Loss"),
     yaxis3=dict(title_text="Loss")
 )
@@ -222,8 +294,9 @@ pxfigit.update_yaxes(
 pxfig.write_image("Results/"+name+".pdf")
 pxfig.write_image("Results/"+name+".pdf")
 pxfigit.write_image("Results/"+name+"_it.pdf")
+fig.write_image("Results/"+name+"_performance.pdf")
 pxfig.show()
-pxfigit.show()
+#pxfigit.show()
 #pxfig.write_image("Results/"+name+"_"+setup+".pdf")
 #pxfig.write_image("Results/"+name+"_"+setup+".pdf")
 #pxfig.show()

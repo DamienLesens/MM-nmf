@@ -9,6 +9,7 @@ import plotly.express as px
 # personal toolbox
 from shootout.methods.runners import run_and_track
 import shootout.methods.post_processors as pp
+from shootout.methods.plotters import line, rename_axis
 import time
 import sys
 import plotly.io as pio
@@ -55,7 +56,8 @@ Y = Y/np.max(Y)
 
 # Shootout config
 #name = "audio_nls_test_rank"
-name = "audio_nls_18-04-2025"
+#name = "audio_nls_18-04-2025"
+name = "audio_nls_kl_19-01-2026"
 
 if len(sys.argv)==1 or int(sys.argv[1])==0:
     seeds = [] #no run
@@ -77,7 +79,7 @@ variables = {
 df = pd.DataFrame()
 
 #algs = ["mSOM", "PGD", "NeNMF", "MU", "HALS", "MU_kl", "mSOM_kl", "MUSOM_kl", "SN CCD"]
-algs = ["MU", "mSOM", "MUSOM", "SN CCD"]
+algs = ["MU", "MUSOM", "SN CCD", "mSOM"]
 # TODO: trueMU for Fro, init for Fro
 
 @run_and_track(
@@ -125,99 +127,94 @@ def one_run(NbIter = 100,
 #    error7 = error7[:-1]+error71[(nit_mu-1):] # use error from Proposed
 #    toc7 = toc7 + [toc7[-1] +  i for i in toc71[nit_mu:]]
     error8, H8, toc8 = nls_kl.Lee_Seung_KL(Y, Wgt, Hini, NbIter=NbIter, verbose=verbose, delta=delta, epsilon=epsilon)
-    error9, H9, toc9 = nls_kl.Proposed_KL(Y, Wgt, Hini, NbIter=NbIter, verbose=verbose, delta=delta, gamma=1.9, epsilon=epsilon)
-    error10, H10, toc10 = nls_kl.Proposed_KL(Y, Wgt, Hini, NbIter=NbIter, verbose=verbose, delta=delta, gamma=1.9, epsilon=epsilon, method="MUSOM")
-    error11, H11, toc11 = nls_kl.ScalarNewton(Y, Wgt, Hini, NbIter=NbIter_SN, verbose=verbose, delta=delta, epsilon=epsilon, method="CCD", print_it=10)
-
-
-    # Tracking issues
-    #import matplotlib.pyplot as plt
-    #plt.subplot(221)
-    #plt.imshow(H8[:,:200])
-    #plt.subplot(222)
-    #plt.plot(np.sum(H8,axis=1))
-    #plt.subplot(223)
-    #plt.imshow(H9[:,:200])
-    #plt.subplot(224)
-    #plt.plot(np.sum(H9,axis=1))
-    #print(np.sum(H9,axis=1))
-    #plt.show()
+    error9, H9, toc9 = nls_kl.Proposed_KL(Y, Wgt, Hini, NbIter=NbIter, verbose=verbose, delta=delta, gamma=1.9, epsilon=epsilon, method="MUSOM")
+    error10, H10, toc10 = nls_kl.ScalarNewton(Y, Wgt, Hini, NbIter=NbIter_SN, verbose=verbose, delta=delta, epsilon=epsilon, method="CCD", print_it=10)
+    error11, H11, toc11 = nls_kl.Proposed_KL(Y, Wgt, Hini, NbIter=NbIter, verbose=verbose, delta=delta, gamma=1.9, epsilon=epsilon)
 
     return {
         "errors": [error8, error9, error10, error11],
         "timings": [toc8, toc9, toc10, toc11],
         #"loss": 5*["l2"]+4*["kl"],
             }
-    
+
+# ------------------- Results --------------------- #
 df = pd.read_pickle("Results/"+name)
+scale, scale_text = 1.5, 2.2  # size of the plots
+quantile = 0.5  # for the error bars, 0.5 is median, 1 is all
+threshold_points = 50
+variables_plot = ["rank"]
+n_cols = 2  # for the threshold plots
+meanplot = "min"  # TODO typical that works
 
-# Remove extrapolation
-#df = df[df["algorithm"] != "fastMU_Fro_ex"]
+# ------------- Performance plots -------
+algorithms = df["algorithm"][:len(algs)]
 
-# no need for median plots here, only 3 runs  (too costly)
+fig = pp.performance_profiles(df, variables=variables_plot, n_cols=n_cols, threshold_points=threshold_points, algorithms=algorithms)
 
-## Using shootout for plotting and postprocessing
-#min_thresh = 0
-#max_thresh = -10
-#thresh = np.logspace(min_thresh,max_thresh,50)
-#scores_time, scores_it, timings, iterations = find_best_at_all_thresh(df,thresh, Nb_seeds)
+fig.update_layout(
+    title=" Audio KL NLS, winner profiles",
+    xaxis_type="log",
+    template="plotly_white",
+    font_size=8*scale_text,
+    height=350*scale,  # adjust figure height
+    width=450*scale,   # adjust figure width
+    # when next to conv plot
+    showlegend=False,
+    title_font_size=9*scale_text,
+)
+fig.update_annotations(font_size=8*scale_text)
+fig.show()
 
-# Interpolating
+# --------------- Convergence plots --------------
 ovars_iterp = ["algorithm", "rank"]
-df = pp.interpolate_time_and_error(df, npoints = 50, adaptive_grid=True, groups=ovars_iterp)
+df = pp.interpolate_time_and_error(df, npoints=df["NbIter"][0], adaptive_grid=True, groups=ovars_iterp)
 
-# Making a convergence plot dataframe
-# We will show convergence plots for various sigma values, with only n=100
-#df_l2_conv = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=[],
-                               #filters={"loss":"l2"}, err_name="errors_interp", time_name="timings_interp")
-#df_l2_conv = df_l2_conv.rename(columns={"timings_interp": "timings", "errors_interp": "errors"})
-#df_l2_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=[],
-                               #filters={"loss":"l2"})
-
-other_names=["rank"]
-df_kl_conv = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=other_names,
+df_kl_conv = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=["rank"],
                                err_name="errors_interp", time_name="timings_interp")
-df_kl_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=other_names)
 df_kl_conv = df_kl_conv.rename(columns={"timings_interp": "timings", "errors_interp": "errors"})
+df_kl_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=["rank"])
+
+df_kl_conv_median_time = pp.median_convergence_plot(df_kl_conv, type_x="timings", mean=meanplot, quantile=quantile)
+df_kl_conv_median_it = pp.median_convergence_plot(df_kl_conv_it, type_x="iterations", mean=meanplot, quantile=quantile)
 # ----------------------- Plot --------------------------- #
-#fig_winner = plot_speed_comparison(thresh, scores_time, scores_it, legend=algs)
-#fig_winner.show()
-
-# Median plots
-#df_l2_conv_median_time = pp.median_convergence_plot(df_l2_conv, type_x="timings")
-df_kl_conv_median_time = pp.median_convergence_plot(df_kl_conv, type_x="timings")
-#df_l2_conv_median_it = pp.median_convergence_plot(df_l2_conv_it)
-df_kl_conv_median_it = pp.median_convergence_plot(df_kl_conv_it)
-
-pxfig2 = px.line(df_kl_conv_median_time, 
-            x="timings", 
-            y= "errors", 
+pxfig2 = line(
+            data_frame=df_kl_conv_median_time,
+            x="timings",
+            y="errors",
             color='algorithm',
-            line_dash='algorithm',
+            #line_dash='algorithm',
             facet_col="rank",
             facet_col_wrap=2,
-            log_y=True,
-            log_x=True,
             facet_col_spacing=0.07,
             facet_row_spacing=0.17,
-            #error_y="q_errors_p", 
-            #error_y_minus="q_errors_m", 
-)
-pxfig2it = px.line(df_kl_conv_it,  #_median_it, 
-            x="it", 
-            y= "errors", 
-            color='algorithm',
-            line_dash='algorithm',
             log_y=True,
-            line_group="groups",
+            log_x=True,
+            error_y_mode="band",
+            error_y="q_errors_p",
+            error_y_minus="q_errors_m",
+            category_orders={
+                "algorithm": algs,
+                "rank": sorted(df_kl_conv_median_time["rank"].unique())
+                }
+            )
+
+pxfig2it = line(
+            data_frame=df_kl_conv_median_it, 
+            x="it", 
+            y="errors", 
+            color='algorithm',
+            #line_dash='algorithm',
+            log_y=True,
+            log_x=True,
+            #line_group="groups",
             facet_col="rank",
             facet_col_wrap=2,
             facet_col_spacing=0.07,
-            facet_row_spacing=0.17
-            #error_y="q_errors_p", 
-            #error_y_minus="q_errors_m", 
+            facet_row_spacing=0.17,
+            error_y_mode="band",
+            error_y="q_errors_p",
+            error_y_minus="q_errors_m",
 )
-
 
 # Final touch
 pxfig2.update_traces(
@@ -228,9 +225,9 @@ pxfig2.update_traces(
 
 pxfig2.update_layout(
     title_text = "NLS",
-    font_size = 10,
-    width=450, # in px
-    height=350,
+    font_size = 8*scale_text,
+    width=450*scale, # in px
+    height=350*scale,
     xaxis1=dict(title_text="Time (s)"),
     xaxis2=dict(title_text="Time (s)"),
     yaxis1=dict(title_text="Loss"),
@@ -254,9 +251,9 @@ pxfig2it.update_traces(
 
 pxfig2it.update_layout(
     title_text = "NLS",
-    font_size = 10,
-    width=450, # in px
-    height=350,
+    font_size = 8*scale_text,
+    width=450*scale, # in px
+    height=350*scale,
     #xaxis=dict(range=[0,4],title_text="Time (s)"),
     #yaxis=dict(title_text="Fit")
 )
@@ -269,10 +266,18 @@ pxfig2it.update_yaxes(
     matches=None,
     showticklabels=True
 )
-pxfig2.write_image("Results/"+name+"_kl.pdf")
-pxfig2it.write_image("Results/"+name+"_kl_it.pdf")
+
+# 1. Remove all individual axis titles
+rename_axis(pxfig2, scale=scale_text, xtext="Time (s)", ytext="Loss")
+pxfig2.layout.title.text = "Audio KL NLS, convergence plots"
+pxfig2.layout.title.font.size = 9*scale_text
+pxfig2.update_layout(margin_t=100)
+
+pxfig2.write_image("Results/"+name+".pdf")
+pxfig2it.write_image("Results/"+name+"_it.pdf")
+fig.write_image("Results/"+name+"_performance.pdf")
 pxfig2.show()
-pxfig2it.show()
+#pxfig2it.show()
 # Convergence plots with all runs
 #pxfig = px.line(df_l2_conv_median_time, 
             #x="timings", 

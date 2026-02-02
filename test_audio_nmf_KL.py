@@ -12,6 +12,7 @@ import plotly.express as px
 # personal toolbox
 from shootout.methods.runners import run_and_track
 import shootout.methods.post_processors as pp
+from shootout.methods.plotters import line, rename_axis
 import sys
 from utils import opt_scaling
 import plotly.io as pio
@@ -73,10 +74,10 @@ variables = {
 }
 
 #name = "audio_test_01-06-2024"
-name = "audio_18-04-2025"
+name = "audio_21-01-2026"
 
 #algs = ["AmSOM", "APGD", "NeNMF", "AMU", "HALS", "AMU_kl", "AmSOM_kl", "AMUSOM_kl", "ASN CCD"]
-algs = ["AMU", "AmSOM", "AMUSOM", "ASN CCD"]
+algs = ["AMU", "AMUSOM", "ASN CCD", "AmSOM"]
 # TODO: better error message when algs dont match
 
 @run_and_track(
@@ -120,9 +121,9 @@ def one_run(rank=12,
 
     # KL algorithms
     error7, W7, H7, toc7, cnt7 = nmf_kl.Lee_Seung_KL(Y, Wini, Hini, NbIter=NbIter, nb_inner=NbIter_inner, tol=tol, verbose=verbose, epsilon=epsilon, print_it=20)
-    error8, W8, H8, toc8, cnt8 = nmf_kl.Proposed_KL(Y, Wini, Hini, NbIter=NbIter, nb_inner=NbIter_inner, tol=tol, verbose=verbose, gamma=1.9, epsilon=epsilon, print_it=20)
-    error9, W9, H9, toc9, cnt9 = nmf_kl.Proposed_KL(Y, Wini, Hini, NbIter=NbIter, nb_inner=NbIter_inner, tol=tol, verbose=verbose, gamma=1.9, epsilon=epsilon, method="AMUSOM", print_it=20)
-    error10, W10, H10, toc10, cnt10 = nmf_kl.ScalarNewton(Y, Wini, Hini, NbIter=NbIter_SN, nb_inner=NbIter_inner_SN, tol=tol, verbose=verbose,  epsilon=epsilon, method="CCD", print_it=5)
+    error8, W8, H8, toc8, cnt8 = nmf_kl.Proposed_KL(Y, Wini, Hini, NbIter=NbIter, nb_inner=NbIter_inner, tol=tol, verbose=verbose, gamma=1.9, epsilon=epsilon, method="AMUSOM", print_it=20)
+    error9, W9, H9, toc9, cnt9 = nmf_kl.ScalarNewton(Y, Wini, Hini, NbIter=NbIter_SN, nb_inner=NbIter_inner_SN, tol=tol, verbose=verbose,  epsilon=epsilon, method="CCD", print_it=5)
+    error10, W10, H10, toc10, cnt10 = nmf_kl.Proposed_KL(Y, Wini, Hini, NbIter=NbIter, nb_inner=NbIter_inner, tol=tol, verbose=verbose, gamma=1.9, epsilon=epsilon, print_it=20)
 
 
     return {
@@ -132,48 +133,75 @@ def one_run(rank=12,
             }
     
 
+# ----------- Results -----------
 df = pd.read_pickle("Results/"+name)
+scale, scale_text = 1.5, 2.2  # size of the plots
+quantile = 0.5  # for the error bars, 0.5 is median, 1 is all
+threshold_points = 50
+variables_plot = ["rank"]
+n_cols = 2  # for the threshold plots
+meanplot = "min"  # TODO typical that works
 
+# ------------- Performance plots -------
+algorithms = df["algorithm"][:len(algs)]
+
+fig = pp.performance_profiles(df, variables=variables_plot, n_cols=n_cols, threshold_points=threshold_points, algorithms=algorithms, tighten=1.2)
+
+fig.update_layout(
+    title="Audio KL NMF, winner profiles",
+    xaxis_type="log",
+    template="plotly_white",
+    font_size=8*scale_text,
+    height=350*scale,  # adjust figure height
+    width=450*scale,   # adjust figure width
+    # when next to conv plot
+    showlegend=False,
+    title_font_size=10*scale_text,
+)
+fig.update_annotations(font_size=8*scale_text)
+fig.show()
+
+# ------------ Convergence plots -------
 # Remove extrapolation
 #df = df[df["algorithm"] != "fastMU_Fro_ex"]
-
 ovars_iterp = ["algorithm", "rank"]
-df = pp.interpolate_time_and_error(df, npoints = 100, adaptive_grid=True, groups=ovars_iterp)
-
-# Making a convergence plot dataframe
-# We will show convergence plots for various sigma values, with only n=100
-#df_l2_conv = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=[],
-                               #filters={"loss":"l2"}, err_name="errors_interp", time_name="timings_interp")
-#df_l2_conv = df_l2_conv.rename(columns={"timings_interp": "timings", "errors_interp": "errors"})
-#df_l2_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=[],
-                               #filters={"loss":"l2"})
+df = pp.interpolate_time_and_error(df, npoints=df["NbIter"][0], adaptive_grid=True, groups=ovars_iterp)
 
 df_kl_conv = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=["rank"],
                                err_name="errors_interp", time_name="timings_interp")
 df_kl_conv = df_kl_conv.rename(columns={"timings_interp": "timings", "errors_interp": "errors"})
 df_kl_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=[], other_names=["rank"])
 
-#df_l2_conv_median_time = pp.median_convergence_plot(df_l2_conv, type_x="timings")
-df_kl_conv_median_time = pp.median_convergence_plot(df_kl_conv, type_x="timings")
-#df_l2_conv_median_it = pp.median_convergence_plot(df_l2_conv_it)
-df_kl_conv_median_it = pp.median_convergence_plot(df_kl_conv_it)
+df_kl_conv_median_time = pp.median_convergence_plot(df_kl_conv, type_x="timings", mean=meanplot, quantile=quantile)
+df_kl_conv_median_it = pp.median_convergence_plot(df_kl_conv_it, type_x="iterations", mean=meanplot, quantile=quantile)
 # ----------------------- Plot --------------------------- #
-pxfig2 = px.line(df_kl_conv_median_time, #line_group="groups", 
-                 x="timings", y= "errors", color='algorithm',
-                 line_dash='algorithm',
-                 facet_col="rank",
-                 facet_col_wrap=2,
-                 facet_col_spacing=0.07,
-                 facet_row_spacing=0.17,
-                 log_y=True,
-                 log_x=True,
-                 )
-
-pxfig2it = px.line(df_kl_conv_median_it, 
-            x="it", 
-            y= "errors", 
+pxfig2 = line(
+            data_frame=df_kl_conv_median_time,
+            x="timings",
+            y="errors",
             color='algorithm',
-            line_dash='algorithm',
+            #line_dash='algorithm',
+            facet_col="rank",
+            facet_col_wrap=2,
+            facet_col_spacing=0.07,
+            facet_row_spacing=0.17,
+            log_y=True,
+            log_x=True,
+            error_y_mode="band",
+            error_y="q_errors_p",
+            error_y_minus="q_errors_m",
+            category_orders={
+                "algorithm": algs,
+                "rank": sorted(df_kl_conv_median_time["rank"].unique())
+                }
+            )
+
+pxfig2it = line(
+            data_frame=df_kl_conv_median_it, 
+            x="it", 
+            y="errors", 
+            color='algorithm',
+            #line_dash='algorithm',
             log_y=True,
             log_x=True,
             #line_group="groups",
@@ -181,8 +209,9 @@ pxfig2it = px.line(df_kl_conv_median_it,
             facet_col_wrap=2,
             facet_col_spacing=0.07,
             facet_row_spacing=0.17,
-            #error_y="q_errors_p", 
-            #error_y_minus="q_errors_m", 
+            error_y_mode="band",
+            error_y="q_errors_p",
+            error_y_minus="q_errors_m",
 )
 
 # Final touch
@@ -194,18 +223,22 @@ pxfig2.update_traces(
 
 pxfig2.update_layout(
     title_text = "NMF",
-    font_size = 10,
-    width=450, # in px
-    height=350,
-    xaxis1=dict(range=np.log10([2, 100]), title_text="Time (s)"),
-    xaxis2=dict(range=np.log10([2, 100]), title_text="Time (s)"),
-    xaxis3=dict(range=np.log10([0, 20])),
-    xaxis4=dict(range=np.log10([4, 40])),
-    yaxis1=dict(range=np.log10([450, 550]), title_text="Loss"),
-    yaxis2=dict(range=np.log10([200, 500])),
-    yaxis3=dict(range=np.log10([5500, 9000]), title_text="Loss"),
-    yaxis4=dict(range=np.log10([1270, 1320])),
+    font_size = 8*scale_text,
+    width=450*scale, # in px
+    height=350*scale,
+    #xaxis1=dict(range=np.log10([2, 100]), title_text="Time (s)"),
+    #xaxis2=dict(range=np.log10([2, 100]), title_text="Time (s)"),
+    #xaxis3=dict(range=np.log10([0, 20])),
+    #xaxis4=dict(range=np.log10([4, 40])),
+    #yaxis1=dict(range=np.log10([450, 550]), title_text="Loss"),
+    #yaxis2=dict(range=np.log10([200, 500])),
+    #yaxis3=dict(range=np.log10([5500, 9000]), title_text="Loss"),
+    #yaxis4=dict(range=np.log10([1270, 1320])),
 )
+rename_axis(pxfig2, scale=scale_text, xtext="Time (s)", ytext="Loss")
+pxfig2.layout.title.text = "Audio KL NMF, convergence plots"
+pxfig2.layout.title.font.size = 10*scale_text
+pxfig2.update_layout(margin_t=100)
 
 pxfig2.update_xaxes(
     matches = None,
@@ -213,7 +246,8 @@ pxfig2.update_xaxes(
 )
 pxfig2.update_yaxes(
     matches=None,
-    showticklabels=True
+    showticklabels=True,
+    #tickfont_size=5*scale_text
 )
 
 pxfig2it.update_traces(
@@ -224,7 +258,7 @@ pxfig2it.update_traces(
 
 pxfig2it.update_layout(
     title_text = "NMF",
-    font_size = 10,
+    font_size = 8*scale_text,
     #width=450*1.62/2, # in px
     #height=450,
     #xaxis=dict(range=[0,4],title_text="Time (s)"),
@@ -240,10 +274,11 @@ pxfig2it.update_yaxes(
     showticklabels=True
 )
 
-pxfig2.write_image("Results/"+name+"_kl.pdf")
-pxfig2it.write_image("Results/"+name+"_kl_it.pdf")
+pxfig2.write_image("Results/"+name+".pdf")
+pxfig2it.write_image("Results/"+name+"_it.pdf")
+fig.write_image("Results/"+name+"_performance.pdf")
 pxfig2.show()
-pxfig2it.show()
+#pxfig2it.show()
 # Convergence plots with all runs
 #pxfig = px.line(df_l2_conv_median_time, #line_group="groups",
                 #x="timings", y= "errors", color='algorithm', 

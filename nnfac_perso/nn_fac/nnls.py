@@ -146,7 +146,7 @@ def hals_nnls_acc(UtM, UtU, in_V, maxiter=500, atime=None, alpha=0.5, delta=0.01
     else:
         V = in_V.copy()
 
-    rho = np.Inf
+    rho = np.inf
     eps0 = 0
     cnt = 1
     eps = 1

@@ -1,21 +1,23 @@
 import numpy as np
 from matplotlib import pyplot as plt
-import NLS_Frobenius as nls_f 
-import nn_fac
+import NMF_Frobenius as nmf_f 
+from nn_fac.nmf import nmf
+#import tensorly as tl #perso branch
+#from tensorly.decomposition import non_negative_parafac_hals
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import time
-from utils import opt_scaling_fro
 import sys
 import plotly.io as pio
+import time
 pio.kaleido.scope.mathjax = None
+from utils import opt_scaling_fro
 
 # Personnal comparison toolbox
 # you can get it at 
 # https://github.com/cohenjer/shootout
-import shootout.methods.post_processors as pp
 from shootout.methods.runners import run_and_track
+import shootout.methods.post_processors as pp
 from shootout.methods.plotters import line, rename_axis
 
 plt.close('all')
@@ -28,24 +30,26 @@ else:
     skip=False
 
 variables = {
-    "add_track" : {"distribution" : "uniform"},
-    "mnr" : [[200,100,10], [1000,400,20]],
-    "NbIter" : [200], # for Lee and Seung also
+    "add_track": {"distribution" : "uniform"},
+    "mnr": [[200, 100, 10], [1000, 400, 20]],
+    "NbIter": [200],  # for Lee and Seung also
     "NbIter_HALS": [100],
-    "SNR" : [100, 30],
-    "delta" : 0,
-    "seed" : seeds,
-    "distribution" : "uniform",
-    "show_it" : 100,
-    "epsilon" : 1e-16
+    "NbIter_inner": 10,
+    "SNR": [100, 40],
+    "delta": 0,
+    "seed": seeds,
+    "distribution": "uniform",
+    "show_it": 100,
+    "epsilon": 1e-8,
+    "tol": 0
 }
 
-#algs = ["MU_Fro","fastMU_Fro_ex","GD_Fro", "NeNMF_Fro", "HALS", "fastMU_Fro", "trueMU_Fro"]
-algs = ["HALS", "MU", "MUSOM", "NeNMF", "PGD", "mSOM"]
-name = "l2_nls_run-19-01-2026"
+name = "l2_run-19-01-2026"
+#algs = ["AMU", "APGD", "ANeNMF", "AHALS", "AmSOM", "AMUSOM"]
+algs = ["AHALS", "AMU", "AMUSOM", "ANeNMF", "APGD", "AmSOM"]
 
-@run_and_track(algorithm_names=algs, path_store="Results/", name_store=name, skip=skip,
-               **variables)
+@run_and_track(algorithm_names=algs, path_store="Results/", name_store=name,
+                skip=skip, **variables)
 def one_run(**cfg):
     m, n, r = cfg["mnr"]
     # Fixed the signal 
@@ -56,47 +60,41 @@ def one_run(**cfg):
 
     # prints
     verbose = True
-
+    
     # adding Gaussian noise to the observed data
-    N = rng.randn(m, n)
+    N = rng.randn(m,n)
     sigma = 10**(-cfg["SNR"]/20)*np.linalg.norm(Vorig)/np.linalg.norm(N)
     V = Vorig + sigma*N
-    
+
     # Initialization for H0 as a random matrix
     Hini = rng.rand(r, n)
-    Hini = opt_scaling_fro(V, Worig@Hini)*Hini  # TODO CHANGE PAPER
+    Wini = rng.rand(m, r) #sparse.random(rV, cW, density=0.25).toarray() 
+    Hini = opt_scaling_fro(V, Wini@Hini)*Hini
     
-    # One noise, one init; NMF is not unique and nncvx so we will find several results
+    # AHALS
+    # Fewer max iter because too slow
+    _, _, error0, toc0, cnt0 = nmf(V, r, init="random", n_iter_max=cfg["NbIter_HALS"], tol=cfg["tol"], return_costs=True, NbIter_inner=cfg["NbIter_inner"], delta=cfg["delta"], verbose=verbose)
+    
+    # AMU
+    error1, W1, H1, toc1, cnt1 = nmf_f.NMF_Lee_Seung(V,  Wini, Hini, cfg["NbIter"], cfg["NbIter_inner"],tol=cfg["tol"], legacy=False, delta=cfg["delta"], verbose=verbose)
+    
+    # AMUSOM 
+    error2, W2, H2, toc2, cnt2 = nmf_f.NMF_proposed_Frobenius(V, Wini, Hini, cfg["NbIter"], cfg["NbIter_inner"], tol=cfg["tol"], delta=cfg["delta"], verbose=verbose, gamma=1.9, method="AMUSOM")
+    
+    # ANeNMF
+    error3, W3, H3, toc3, cnt3  = nmf_f.NeNMF(V, Wini, Hini, tol=cfg["tol"], nb_inner=cfg["NbIter_inner"], itermax=cfg["NbIter"], delta=cfg["delta"], verbose=verbose)
+    
+    # APGD
+    error4, W4, H4, toc4, cnt4  = nmf_f.Grad_descent(V , Wini, Hini, cfg["NbIter"], cfg["NbIter_inner"], tol=cfg["tol"], delta=cfg["delta"], verbose=verbose)
 
-    # HALS
-    # HALS is unfair because we compute things before. We add the time needed for this back after the algorithm
-    tic = time.perf_counter()
-    WtV = Worig.T@V
-    WtW = Worig.T@Worig
-    toc0_offset = time.perf_counter() - tic
-    H0, _, _, _, error0, toc0 = nn_fac.nnls.hals_nnls_acc(WtV, WtW, np.copy(Hini), maxiter=cfg["NbIter_HALS"], return_error=True, delta=cfg["delta"], M=V)#, verbose=verbose)
-    toc0 = [toc0[i] + toc0_offset for i in range(len(toc0))] # leave the 0 in place for init
-    toc0[0] = 0
+    # AmSOM
+    error5, W5, H5, toc5, cnt5 = nmf_f.NMF_proposed_Frobenius(V, Wini, Hini, cfg["NbIter"], cfg["NbIter_inner"], tol=cfg["tol"], delta=cfg["delta"], verbose=verbose, gamma=1.9, method="AmSOM")
 
-    # MU
-    error1, H1, toc1 = nls_f.NMF_Lee_Seung(V,  Worig, Hini, cfg["NbIter"], legacy=False, delta=cfg["delta"], verbose=verbose, epsilon=cfg["epsilon"])
-    
-    # MUSOM
-    error2, H2, toc2 = nls_f.NMF_proposed_Frobenius(V, Worig, Hini, cfg["NbIter"], delta=cfg["delta"], verbose=verbose, method="MUSOM", gamma=1.9, epsilon=cfg["epsilon"])
-   
-    # NeNMF 
-    error3, H3, toc3  = nls_f.NeNMF(V, Worig, Hini, itermax=cfg["NbIter"], delta=cfg["delta"], verbose=verbose, epsilon=cfg["epsilon"])
-    
-    # PGD 
-    error4, H4, toc4  = nls_f.Grad_descent(V , Worig, Hini, cfg["NbIter"], delta=cfg["delta"], verbose=verbose, epsilon=cfg["epsilon"])
-    
-    # mSOM
-    error5, H5, toc5 = nls_f.NMF_proposed_Frobenius(V, Worig, Hini, cfg["NbIter"], delta=cfg["delta"], verbose=verbose, method="mSOM", gamma=1.9, epsilon=cfg["epsilon"])
-
-    return {
-            "errors": [error0, error1, error2, error3, error4, error5],
-            "timings": [toc0, toc1, toc2, toc3, toc4, toc5],
-           }
+    #   algs = ["MU_Fro","fastMU_Fro_ex","GD_Fro", "NeNMF_Fro", "HALS", "fastMU_Fro", "trueMU_Fro"]
+    return {"errors" : [error0, error1, error2, error3, error4, error5], 
+            "timings" : [toc0, toc1, toc2, toc3, toc4, toc5],
+            "cnt" : [cnt0[::10], cnt1[::10], cnt2[::10], cnt3[::10], cnt4[::10], cnt5[::10]]
+            }
 
 
 # -------------------- Post-Processing ------------------- #
@@ -110,16 +108,15 @@ meanplot = "median"  # TODO typical that works
 
 df = pd.read_pickle("Results/"+name)
 
-# Remove extrapolation (older runs had it)
-#df = df[df["algorithm"] != "fastMU_Fro_ex"]
-
-# --------------- Performance profiles for all setups and SNRs -------------- # 
+# Check that algs are correctly defined
 algorithms = df["algorithm"][:len(algs)]
 
+# ----------- Performance profiles for all setups and SNRs -------------- #
 fig = pp.performance_profiles(df, variables=variables_plot, n_cols=n_cols, threshold_points=threshold_points, algorithms=algorithms, pad_x_title=0.05)
 
+# Update layout
 fig.update_layout(
-    title="Synthetic Frobenius NLS, winner profiles",
+    title="Synthetic Frobenius NMF, winner profiles",
     xaxis_type="log",
     template="plotly_white",
     font_size=8*scale_text,
@@ -131,19 +128,21 @@ fig.update_layout(
 )
 fig.update_annotations(font_size=8*scale_text)
 
+# todo change mnr labels in subplot annotations to remove np.int()
 import re
 for ann in fig.layout.annotations:
     if ann.text[:3]=="mnr":
         ann.text = "[M,N,R]=["+ ", ".join(re.findall(r"\((\d+)\)", ann.text)) + "]" + ann.text[ann.text.find(", SNR"):]
         
-# ----------- Convergence plots -------------- #
-# Interpolating time (choose fewer points for better vis), adaptive grid since time varies across plots
-ovars_inter = ["mnr", "SNR", "algorithm"]
-df = pp.interpolate_time_and_error(df, npoints=df["NbIter"][0], adaptive_grid=True, groups=ovars_inter)#, strategy="min_curve")
 
-ovars = ["mnr", "SNR", "seed"]
+
+# Interpolating time (choose fewer points for better vis), adaptive grid since time varies across plots
+ovars_interp =  ["mnr", "SNR", "algorithm"]
+df = pp.interpolate_time_and_error(df, npoints=df["NbIter"][0], adaptive_grid=True, groups=ovars_interp)
+
 # Making a convergence plot dataframe
 # We will show convergence plots for various sigma values, with only n=100
+ovars = ["mnr", "SNR", "seed"]
 df_conv = pp.df_to_convergence_df(df, groups=True, groups_names=ovars, other_names=ovars, err_name="errors_interp", time_name="timings_interp", exclude_zero=True)
 df_conv = df_conv.rename(columns={"timings_interp": "timings", "errors_interp": "errors"})
 df_conv_it = pp.df_to_convergence_df(df, groups=True, groups_names=ovars, other_names=ovars)
@@ -155,37 +154,41 @@ df_conv_median_it = pp.median_convergence_plot(df_conv, type_x="iterations", mea
 # Merge SNR and mnr in one column for facetting
 df_conv_median_time["mnr_SNR"] = df_conv_median_time["mnr"] + ", SNR=" + df_conv_median_time["SNR"].astype(str)
 
+
 # Convergence plots with all runs
-pxfig = line(#df_conv_median_time, 
+pxfig = line(
             data_frame=df_conv_median_time,
-            width=450*scale, # in px
-            height=350*scale,
-            #x="timings", 
             x="timings", 
             y= "errors", 
             color='algorithm',
             #line_dash='algorithm',
             facet_col="mnr_SNR",
+            #facet_row="SNR",
             facet_col_wrap=2,
             log_y=True,
             log_x=True,
             facet_col_spacing=0.12,
-            facet_row_spacing=0.12,
-            #line_group="groups",
+            facet_row_spacing=0.2,
+            #log_x=True,
             error_y_mode="band",
             error_y="q_errors_p", 
             error_y_minus="q_errors_m", 
             category_orders={
                 "algorithm": algs,
-                "mnr_SNR": ["[np.int64(1000), np.int64(400), np.int64(20)], SNR=30", "[np.int64(1000), np.int64(400), np.int64(20)], SNR=100", "[np.int64(200), np.int64(100), np.int64(10)], SNR=30", "[np.int64(200), np.int64(100), np.int64(10)], SNR=100"]
+                "mnr_SNR": ["[np.int64(1000), np.int64(400), np.int64(20)], SNR=40", "[np.int64(1000), np.int64(400), np.int64(20)], SNR=100", "[np.int64(200), np.int64(100), np.int64(10)], SNR=40", "[np.int64(200), np.int64(100), np.int64(10)], SNR=100"]
                 }
 )
-
 # Final touch
 pxfig.update_traces(
     selector=dict(),
     line_width=2.5,
     #error_y_thickness = 0.3,
+)
+
+pxfig.update_layout(
+    font_size = 8*scale_text,
+    width=450*scale, # in px
+    height=350*scale
 )
 
 pxfig.update_xaxes(
@@ -200,22 +203,18 @@ pxfig.update_yaxes(
 # updating titles
 for ann in pxfig.layout.annotations:
     if ann.text[:3]=="mnr":
-        ann.text = "[M,N,R]=["+ ", ".join(re.findall(r"\((\d+)\)", ann.text)) + "]" + ann.text[ann.text.find(", SNR="):]
-        
+        ann.text = "M,N,R=["+ ", ".join(re.findall(r"\((\d+)\)", ann.text)) + "]" + ann.text[ann.text.find(", SNR="):]
+
 # Final touch
 rename_axis(pxfig, scale=scale_text, xtext="Time (s)", ytext="n. Loss")
-pxfig.layout.title.text = "Synthetic Frobenius NLS, convergence plots"
-pxfig.update_layout(margin_t=100)
+pxfig.layout.title.text = "Synthetic Frobenius NMF, convergence plots"
 pxfig.layout.title.font.size = 9*scale_text
-pxfig.update_layout(font_size=8*scale_text)
+pxfig.update_layout(margin_t=100)
 
 
 # Convergence plots with all runs
-pxfigit = line(#df_conv_median_time, 
+pxfigit = line(
             data_frame=df_conv_median_it,
-            width=450*scale, # in px
-            height=350*scale,
-            #x="timings", 
             x="it", 
             y= "errors", 
             color='algorithm',
@@ -223,37 +222,14 @@ pxfigit = line(#df_conv_median_time,
             facet_col="mnr",
             facet_row="SNR",
             log_y=True,
-            facet_col_spacing=0.1,
-            facet_row_spacing=0.1,
-            #line_group="groups",
+            facet_col_spacing=0.12,
+            facet_row_spacing=0.2,
+            #log_x=True,
             error_y_mode="band",
             error_y="q_errors_p", 
             error_y_minus="q_errors_m", 
 )
-
-# Hide default facet labels on the right
-#for ann in pxfig.layout.annotations:
-#    if "SNR" in ann.text:
-#        ann.text = ""
-
-# Define positions for 2 rows
-#row_titles = df['SNR'].unique()
-#n_rows = 2
-#y_positions = [1 - (i + 0.5)/n_rows for i in range(n_rows)]  # center of each row
-
-## Add custom annotations above each row
-#for y, title in zip(y_positions, row_titles):
-    #pxfig.add_annotation(
-        #xref='paper', yref='paper',
-        #x=0.5,      # center horizontally across columns
-        #y=y,        # vertical position
-        #text="SNR="+str(title),
-        #showarrow=False,
-        #font=dict(size=14, color="black"),
-        #xanchor='center'
-    #)
-
-
+# Final touch
 pxfigit.update_traces(
     selector=dict(),
     line_width=2.5,
@@ -261,15 +237,15 @@ pxfigit.update_traces(
 )
 
 pxfigit.update_layout(
-    font_size=8*scale_text,
-    #width=230*1.62, # in px
-    #height=230,
-    #xaxis1=dict(range=[0,0.05], title_text="Iters"),
-    #xaxis3=dict(range=[0,0.05]),
-    #xaxis2=dict(range=[0,0.01], title_text="Iters"),
-    #xaxis4=dict(range=[0,0.005]),
+    font_size = 8*scale_text,
+    width=450*scale, # in px
+    height=350*scale,
+    #xaxis1=dict(range=[0,3],title_text="Time (s)"),
+    #xaxis2=dict(range=[0,0.2],title_text="Time (s)"),
     yaxis1=dict(title_text="n. Loss"),
-    yaxis3=dict(title_text="n. Loss")
+    yaxis2=dict(title_text=""),
+    yaxis3=dict(title_text="n. Loss"),
+    yaxis4=dict(title_text="")
 )
 
 pxfigit.update_xaxes(
@@ -280,10 +256,11 @@ pxfigit.update_yaxes(
     matches=None,
     showticklabels=True
 )
-
-
-
-# we save twice because of kaleido+browser bug...
+# updating titles
+for i,ann in enumerate(pxfigit.layout.annotations):
+    if ann.text[:3]=="mnr":
+        ann.text="[M,N,R]"+ann.text[3:] 
+        
 pxfig.write_image("Results/"+name+".pdf")
 pxfig.write_image("Results/"+name+".pdf")
 pxfigit.write_image("Results/"+name+"_it.pdf")
